@@ -1,16 +1,89 @@
-# Bonsai MCP
+# Bonsai MCP Ego
 
-[![CI](https://github.com/Show2Instruct/bonsai-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Show2Instruct/bonsai-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/Wafik20/bonsai-mcp-ego/actions/workflows/ci.yml/badge.svg)](https://github.com/Wafik20/bonsai-mcp-ego/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Docs](https://img.shields.io/badge/docs-site-blue.svg)](https://show2instruct.github.io/bonsai-mcp/)
 
-A local **Model Context Protocol** server that connects any MCP client
+[**Wafik20/bonsai-mcp-ego**](https://github.com/Wafik20/bonsai-mcp-ego) is a fork of
+[**Show2Instruct/bonsai-mcp**](https://github.com/Show2Instruct/bonsai-mcp), extended
+for research on **IFC → semantic house tour → egocentric video + camera poses**.
+
+It retains the upstream local **Model Context Protocol** server that connects any MCP client
 (Claude Desktop, Claude Code, Cursor, VS Code, OpenAI Codex) to a running
 **Blender + Bonsai** (BlenderBIM) session. Inspect the scene, query the
 loaded IFC project, capture the viewport, and run Python inside Blender.
 
-**Documentation site: [show2instruct.github.io/bonsai-mcp](https://show2instruct.github.io/bonsai-mcp/)**
+## Egocentric walkthroughs from IFC homes
+
+```text
+IFC house
+→ identify rooms and circulation spaces
+→ build semantic room connectivity graph
+→ plan a tour that visits every room
+→ generate an egocentric camera trajectory
+→ render MP4 + per-frame camera poses
+```
+
+The fork adds two main MCP tools. Call them through your connected MCP client
+with an IFC home loaded in Bonsai.
+
+### `plan_house_tour`
+
+```python
+plan_house_tour(
+    start_space_id=None,
+    seed=0,
+)
+```
+
+- Identifies tourable rooms and circulation spaces.
+- Builds semantic connectivity using IFC doors, openings, and stairs.
+- Handles separate physical components independently.
+- Creates a deterministic tour covering every reachable target room in each component.
+
+`start_space_id` is an optional IFC space entity ID. The result includes component
+IDs and ordered room tours; graph coverage alone does not prove physical walkability.
+
+### `generate_ego_video`
+
+With the bridge running and **Allow edits** enabled, invoke the MCP tool with:
+
+```python
+generate_ego_video(
+    output_path=r"D:\Blender\projects\house_ego.mp4",
+    component_id=0,
+    seed=0,
+)
+```
+
+It follows the semantic house tour, visits every tourable room in the selected
+component, and moves continuously through the corresponding doors/openings/stairs.
+It renders an **H.264 MP4** and writes `house_ego_poses.json` with per-frame camera
+positions, rotations, timestamps, and space IDs. Other parameters use their defaults;
+requested duration is a minimum, not a cutoff for the room tour.
+
+Navigation is a plausible connector-guided camera path, not strict collision-free
+human navigation. Physical door meshes are ignored for navigation and hidden during
+rendering; scene state is restored afterward, and the source IFC is not modified.
+**Render disconnected units/components separately—never teleport between them.**
+Use the component IDs returned by `plan_house_tour`.
+
+### Watch progress
+
+Once generation starts in Blender, it creates `house_ego_progress.json` beside the
+video. In a second PowerShell terminal:
+
+```powershell
+& "D:\Blender\plugins\bonsai-mcp\scripts\watch_ego_progress.ps1" -Path "D:\Blender\projects\house_ego_progress.json"
+```
+
+The watcher shows planning stages, transition/search details, render-frame progress,
+and failures. **It only monitors; it does not start generation.** The output directory
+must exist. Use a fresh output filename for each run; existing video, poses, and
+progress files are not overwritten. See [the tools reference](docs/tools.md) for details.
+
+**Upstream documentation: [show2instruct.github.io/bonsai-mcp](https://show2instruct.github.io/bonsai-mcp/)**
 
 ```
 MCP client  --stdio-->  bonsai-mcp  --127.0.0.1:9878-->  Blender add-on (bpy + Bonsai + IfcOpenShell)
@@ -18,10 +91,10 @@ MCP client  --stdio-->  bonsai-mcp  --127.0.0.1:9878-->  Blender add-on (bpy + B
 
 ![Bonsai MCP workflow: an MCP client drives the bonsai-mcp server, which talks to the Blender add-on and the IFC model loaded in Bonsai](docs/assets/workflow.png)
 
-> Part of [**IFC-CoPilot**: A Tool-Based Framework for LLM-Driven IFC Building
+> The upstream project is part of [**IFC-CoPilot**: A Tool-Based Framework for LLM-Driven IFC Building
 > Design](https://show2instruct.github.io/ifc-copilot/).
 
-## News
+## Upstream news
 
 - **[2026-08]** **v1.2 released:** three new tools that sync Blender after IFC
   edits without a full reload (`refresh_view`, `refresh_geometry`,
@@ -37,9 +110,9 @@ MCP client  --stdio-->  bonsai-mcp  --127.0.0.1:9878-->  Blender add-on (bpy + B
 
 ## Relation to `ifc-bonsai-mcp`
 
-This repository supersedes
-[ifc-bonsai-mcp](https://github.com/Show2Instruct/ifc-bonsai-mcp), which we
-used for the experiments in the [MCP4IFC paper](https://arxiv.org/abs/2511.05533)
+The upstream `Show2Instruct/bonsai-mcp` project supersedes
+[ifc-bonsai-mcp](https://github.com/Show2Instruct/ifc-bonsai-mcp), used by its authors
+for the experiments in the [MCP4IFC paper](https://arxiv.org/abs/2511.05533)
 and which stays online for reproducibility.
 
 The original ships a large set of predefined tools. This one is built around
@@ -49,8 +122,9 @@ to tasks we never anticipated. The code-generation workflow is reworked and
 simplified here, and the server is lightweight, quick to connect, and easy to
 use.
 
-**Use this repository** unless you need the original's fixed tools or the exact
-paper setup. It is the one we keep updated.
+**Use this fork for ego-video research.** The earlier server remains available
+for its fixed tools and the exact paper setup; the upstream project retains its
+own releases and documentation.
 
 ## Requirements
 
@@ -80,12 +154,16 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 point your MCP client at it below:
 
 ```bash
-git clone https://github.com/Show2Instruct/bonsai-mcp.git
+git clone https://github.com/Wafik20/bonsai-mcp-ego.git
 ```
 
 ## Quick start
 
 ### 1. Install the Blender add-on
+
+**For ego-video tools, install `blender_addon/bonsai_bridge.py` from this fork.**
+The upstream release ZIPs below do not include these extensions. Reload the add-on
+or restart Blender after updating the bridge file.
 
 1. In Blender: **Edit > Preferences > Add-ons**. On Blender 4.2+/5.x, open
    the **▾** menu (top-right) > **Install from Disk...**; on older versions
@@ -149,7 +227,7 @@ path to your clone.
 
 ## Tools
 
-Fourteen tools, each tagged `[QUERY]` (read-only) or `[EDIT]` (mutates state).
+Sixteen tools, each tagged `[QUERY]` (read-only) or `[EDIT]` (mutates state).
 
 | Category | Tool                      | Purpose                                                     |
 | -------- | ------------------------- | ----------------------------------------------------------- |
@@ -161,6 +239,8 @@ Fourteen tools, each tagged `[QUERY]` (read-only) or `[EDIT]` (mutates state).
 | QUERY    | `get_ifc_project_info`    | Schema, counts, materials, classifications.                 |
 | QUERY    | `get_spatial_structure`   | Site -> building -> storey -> space tree with element counts. |
 | QUERY    | `get_quantities`          | Quantity takeoff (areas, volumes, lengths) by class, optionally per storey. |
+| QUERY    | `plan_house_tour`         | Classify spaces, build semantic connectivity, and plan deterministic tours per component. |
+| EDIT     | `generate_ego_video`      | Render a semantic house tour as an H.264 MP4 with per-frame camera poses and progress reporting. |
 | EDIT     | `execute_ifc_code`        | Run IfcOpenShell / Bonsai API code. `bpy` blocked.          |
 | EDIT     | `execute_blender_code`    | Run arbitrary Python with full `bpy` access.                |
 | EDIT     | `refresh_view`            | Sync the scene after data-only IFC edits (names, psets); milliseconds, no disk I/O. |
@@ -188,7 +268,7 @@ REPL on your machine and never expose it to a network. See
 
 ## Documentation
 
-Rendered site: [show2instruct.github.io/bonsai-mcp](https://show2instruct.github.io/bonsai-mcp/)
+Upstream rendered site: [show2instruct.github.io/bonsai-mcp](https://show2instruct.github.io/bonsai-mcp/)
 
 - [Installation](docs/installation.md)
 - [Client setup](docs/clients.md) (Claude, Cursor, VS Code, OpenAI)
