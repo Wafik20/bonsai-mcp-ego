@@ -186,6 +186,27 @@ class ListElementsInput(BaseModel):
     )
 
 
+class PlanHouseTourInput(BaseModel):
+    """Read-only semantic IFC space graph and tour options."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    start_space_id: int | None = Field(
+        None,
+        gt=0,
+        description=(
+            "Optional positive IFC entity ID of an eligible starting IfcSpace (not GlobalId). "
+            "Sets the start in its component; all other interior components are still toured."
+        ),
+    )
+    seed: int = Field(
+        0,
+        ge=0,
+        le=2147483647,
+        description="Nonnegative 32-bit seed for deterministic tour tie-breaking.",
+    )
+
+
 class GetSpatialStructureInput(BaseModel):
     """Options for the spatial hierarchy query."""
 
@@ -473,3 +494,41 @@ class ObjectSummary(BaseModel):
     dimensions: list[float] | None = None
     ifc_class: str | None = None
     global_id: str | None = None
+
+
+class GenerateEgoVideoInput(BaseModel):
+    """Render an egocentric walkthrough of the loaded IFC scene."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    output_path: str = Field(..., min_length=1, description="MP4 output path on the Blender host.")
+    duration_seconds: float = Field(
+        30.0,
+        gt=0,
+        le=3600,
+        description=(
+            "Minimum video duration in seconds. The complete selected component tour is "
+            "rendered even when it takes longer; this never truncates the route."
+        ),
+    )
+    component_id: int | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Optional component ID from plan_house_tour (not an IFC entity ID). "
+            "When omitted, one eligible interior component is selected deterministically."
+        ),
+    )
+    fps: int = Field(10, ge=1, le=60)
+    width: int = Field(1280, ge=64, le=4096, multiple_of=2)
+    height: int = Field(720, ge=64, le=4096, multiple_of=2)
+    camera_height: float = Field(1.65, gt=0, le=10, description="Eye height in metres.")
+    seed: int = Field(0, ge=0, le=2147483647)
+
+    @model_validator(mode="after")
+    def _validate_output_path(self) -> GenerateEgoVideoInput:
+        if not self.output_path.strip() or "\x00" in self.output_path:
+            raise ValueError("output_path must be nonempty and contain no NUL characters.")
+        if not self.output_path.lower().endswith(".mp4"):
+            raise ValueError("output_path must end in .mp4.")
+        return self

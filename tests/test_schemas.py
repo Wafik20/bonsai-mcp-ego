@@ -283,3 +283,58 @@ class TestSpatialAndQuantitiesInputs:
         m = GetSceneInfoInput()
         assert m.limit == 200
         assert m.offset == 0
+
+
+class TestGenerateEgoVideoInput:
+    @pytest.mark.parametrize("component_id", [None, 0, 1, 2147483648])
+    def test_component_ids(self, component_id):
+        from bonsai_mcp.schemas import GenerateEgoVideoInput
+
+        args = GenerateEgoVideoInput(output_path="walk.mp4", component_id=component_id)
+        assert args.component_id == component_id
+
+    def test_defaults(self):
+        from bonsai_mcp.schemas import GenerateEgoVideoInput
+
+        args = GenerateEgoVideoInput(output_path="walk.mp4")
+        assert args.model_dump() == dict(output_path="walk.mp4", duration_seconds=30.0,
+                                        fps=10, width=1280, height=720,
+                                        camera_height=1.65, seed=0, component_id=None)
+
+    @pytest.mark.parametrize("field,value", [
+        ("output_path", ""), ("output_path", "walk.avi"), ("output_path", "bad\x00.mp4"),
+        ("duration_seconds", float("nan")), ("duration_seconds", float("inf")),
+        ("duration_seconds", 0), ("duration_seconds", 3601), ("duration_seconds", "30"),
+        ("duration_seconds", True), ("fps", True), ("fps", 1.5), ("fps", 61),
+        ("fps", 0), ("width", 63), ("width", 1279), ("height", 4098),
+        ("width", "1280"), ("camera_height", float("inf")), ("camera_height", 0),
+        ("camera_height", 11), ("seed", -1), ("seed", 2147483648), ("seed", False),
+        ("component_id", -1), ("component_id", True), ("component_id", False),
+        ("component_id", "0"), ("component_id", 0.0), ("component_id", []),
+        ("unknown", 1),
+    ])
+    def test_invalid(self, field, value):
+        from bonsai_mcp.schemas import GenerateEgoVideoInput
+
+        with pytest.raises(ValidationError):
+            GenerateEgoVideoInput.model_validate({"output_path": "walk.mp4", field: value})
+
+
+class TestPlanHouseTourInput:
+    def test_defaults_and_bounds(self):
+        from bonsai_mcp.schemas import PlanHouseTourInput
+
+        assert PlanHouseTourInput().model_dump() == {"start_space_id": None, "seed": 0}
+        assert PlanHouseTourInput(start_space_id=1, seed=2147483647).seed == 2147483647
+
+    @pytest.mark.parametrize("values", [
+        {"start_space_id": 0}, {"start_space_id": -1}, {"start_space_id": True},
+        {"start_space_id": "12"}, {"start_space_id": 12.0},
+        {"seed": -1}, {"seed": 2147483648}, {"seed": True},
+        {"seed": "0"}, {"seed": 0.0}, {"seed": None}, {"extra": 1},
+    ])
+    def test_strict_validation(self, values):
+        from bonsai_mcp.schemas import PlanHouseTourInput
+
+        with pytest.raises(ValidationError):
+            PlanHouseTourInput.model_validate(values)

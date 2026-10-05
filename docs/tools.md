@@ -1,11 +1,11 @@
 # Tools reference
 
-Bonsai MCP exposes fourteen tools, split into two categories:
+Bonsai MCP exposes sixteen tools, split into two categories:
 
 | Category | Behaviour | Tools |
 | --- | --- | --- |
-| **QUERY** | Read-only. Safe to call without confirmation. | `get_scene_info`, `get_selected_objects`, `list_elements`, `get_psets`, `get_viewport_screenshot`, `get_ifc_project_info`, `get_spatial_structure`, `get_quantities` |
-| **EDIT** | Mutates Blender state, the IFC model, or the filesystem. | `execute_ifc_code`, `execute_blender_code`, `save_ifc_file`, `refresh_view`, `refresh_geometry`, `reload_project` |
+| **QUERY** | Read-only. Safe to call without confirmation. | `get_scene_info`, `get_selected_objects`, `list_elements`, `get_psets`, `get_viewport_screenshot`, `get_ifc_project_info`, `get_spatial_structure`, `get_quantities`, `plan_house_tour` |
+| **EDIT** | Mutates Blender state, the IFC model, or the filesystem. | `execute_ifc_code`, `execute_blender_code`, `save_ifc_file`, `refresh_view`, `refresh_geometry`, `reload_project`, `generate_ego_video` |
 
 The category is encoded in two places:
 
@@ -33,6 +33,85 @@ the error instead of retrying the same call.
 Two code execution tools live in the EDIT category: `execute_ifc_code`
 (preferred, IFC-only, `bpy` blocked) and `execute_blender_code` (full `bpy`
 access). See [Safety](safety.md).
+
+## `plan_house_tour` (QUERY)
+
+Classifies all loaded IFC spaces, builds an evidenced interior connectivity graph,
+and plans **one tour per connected interior component**. It never joins separate
+units by teleportation. It does not modify IFC, Blender state, cameras, or files.
+The tool works with **Allow edits** disabled. `generate_ego_video` reuses this
+semantic tour as its route source.
+
+Inputs (both optional):
+
+```json
+{"start_space_id": null, "seed": 0}
+```
+
+- `start_space_id`: positive IFC entity ID of an eligible space, not a GlobalId.
+  It selects the start within its component; other components are still toured.
+  Excluded, unknown, nonexistent, and non-space IDs produce an error.
+- `seed`: integer from 0 to 2147483647. The same IFC, start, and seed produce
+  the same result. Booleans, numeric strings, and unknown arguments are rejected.
+
+### Classifications and targets
+
+Every space has a classification, reason, and supporting evidence:
+
+- `tourable_interior`: rooms to visit, including utility rooms.
+- `circulation`: foyers, hallways, stair spaces, and similar connectors.
+- `non_tourable`: excluded by supported metadata or a documented touring policy.
+- `unknown`: insufficient or conflicting evidence; never silently excluded.
+
+IFC function/classification metadata takes precedence over names. An INTERNAL
+space flag alone does not establish occupancy. A conservative **service-roof
+exclusion policy** may exclude a service-classified roof space with no evidenced
+occupied use or access. That is a touring policy, not proof of physical
+inaccessibility. Evidence of accessible or occupied roof use overrides it.
+
+Results include `tourable_spaces`, `circulation_spaces`, `excluded_spaces`, and
+`unresolved_spaces`, with reasons for every exclusion or unresolved classification.
+`target_space_ids` identifies the coverage denominator: tourable rooms and the
+circulation selected to connect them. Raw IFC spaces and graph diagnostics remain
+available, including spaces not selected for touring.
+
+### Connectivity and component tours
+
+Door/opening relationships, paired virtual-boundary polygons, and actual
+stair-tread/floor polygon overlaps supply edge evidence. Ambiguous door references
+may be resolved by opposite-side containment in actual room volumes, a supported
+opening prism, its host wall, and floor support. Unsupported or conflicting
+geometry remains unresolved. Bounding-box proximity does not create edges.
+
+Disconnected groups are investigated using component diagnostics. Supported unit
+metadata, demising-wall evidence, hosted-opening audits, and distinct entrances
+can support separate-unit status. Missing evidence remains an unresolved
+disconnection rather than being declared a separate unit by default.
+
+`tours` contains each component's ordered room steps, IDs, start, and coverage.
+Rooms can be revisited. `components` and `component_details` describe the graph
+and its validation; `raw_components` retains unfiltered component membership.
+`graph_text` and `tour_text` provide readable debug output. The legacy flat `tour`
+and `route_space_ids` are populated only for a single touring component; they are
+empty when there are multiple components.
+
+`coverage` is covered target spaces divided by all target spaces across the
+component tours. `tourable_room_coverage` reports coverage of room targets alone.
+A numeric coverage of 1.0 does **not** resolve classification or topology failures:
+inspect `classification_complete`, `graph_validation_status`, `coverage_complete`,
+`unresolved_spaces`, `unresolved_graph_spaces`, and component diagnostics as well.
+Coverage is `null` when its denominator is empty; this is not successful coverage.
+`whole_model_coverage` uses all IFC spaces as its denominator and is not the
+interior-tour metric. Global reachability/visited counts cover the independent
+component tours, not a continuous walk from one start. Explicit-start reachability
+is reported separately when a start is supplied.
+
+`blocking_unresolved_connectors` records unresolved links that affect validation.
+`connector_audit_notes` retains non-blocking export issues, exterior doors, and
+non-portals such as windows; these are not silently discarded.
+
+This tool validates graph evidence, not door operation, collision-free walking
+paths, stair camera motion, or physical passability. It does not render a video.
 
 ## `get_scene_info` (QUERY)
 
@@ -691,3 +770,134 @@ in prose:
 
 Long operations also emit coarse MCP progress notifications when the
 client supplies a `progressToken`.
+
+
+## `generate_ego_video` [EDIT]
+
+Render a first-person walkthrough of the currently loaded IFC scene. Requires
+**Allow edits** in the bridge. Writes an MP4 and a camera-pose JSON sidecar on
+the **Blender host**, not the MCP client. No video bytes are sent over MCP.
+
+```json
+{
+  "output_path": "/absolute/path/walkthrough.mp4",
+  "duration_seconds": 30,
+  "fps": 10,
+  "width": 1280,
+  "height": 720,
+  "camera_height": 1.65,
+  "seed": 0,
+  "component_id": null
+}
+```
+
+Only `output_path` is required. The example shows all defaults.
+
+| Argument | Bounds |
+| --- | --- |
+| `output_path` | Nonempty string ending in `.mp4`; no NUL characters |
+| `duration_seconds` | Finite number greater than 0, at most 3600 |
+| `fps` | Integer, 1–60 |
+| `width`, `height` | Even integers, 64–4096 |
+| `camera_height` | Finite eye height in metres, greater than 0, at most 10 |
+| `seed` | Integer, 0–2147483647 |
+| `component_id` | Nonnegative integer or null; null selects a deterministic eligible component |
+
+Numeric strings, booleans, unknown arguments, and nonfinite numbers are rejected.
+`duration_seconds` is a minimum, not a route cutoff. The complete tour takes
+priority; walking, turns, and room observations can extend the video.
+The returned duration is the actual `frame_count / fps`.
+
+The structured result includes `success`, `video_path`, `poses_path`,
+`frame_count`, `fps`, `duration_seconds`, `requested_duration_seconds`, `width`,
+`height`, `camera_height`, `seed`, and `navigation` metadata. It also reports
+`coordinate_system`, `position_units`, `metres_per_scene_unit`, and
+`quaternion_order`. Tour metadata includes `component_id`, ordered `tour` space
+IDs (including revisits), `visited_spaces`, `tourable_rooms_visited`,
+`tourable_rooms_total`, `coverage`, and `route_length_m`.
+
+For `walkthrough.mp4`, the sidecar is `walkthrough_poses.json`. It contains the
+same metadata plus a `frames` array. Each entry has zero-based `frame`, one-based
+`blender_frame`, `timestamp` in seconds, `position` as `[x, y, z]`, and
+`rotation_quaternion` as `[w, x, y, z]`. Positions use Blender world scene units;
+`metres_per_scene_unit` converts them to metres. The world is right-handed and
+Z-up. Camera forward is local -Z and camera up is local +Y. Poses are sampled
+from the evaluated camera at the exact rendered frames. `space_id` identifies
+the containing IFC space where membership is reliable; portal gaps can be null.
+
+Navigation reports `door_collision_policy: "IfcDoor_ignored"`. Door relationships
+still establish connectivity, but physical `IfcDoor` objects are excluded from
+navigation and hidden during rendering. There are no door actions or animations.
+
+The output parent directory must already exist. Existing video or sidecar files
+are never overwritten. Use a new filename for another run. Paths refer to files
+on the Blender host; Blender-relative `//` paths are also accepted.
+
+### Live progress in PowerShell
+
+When Blender starts a validated run, it creates an atomic JSON snapshot beside
+the video: `walkthrough.mp4` uses `walkthrough_progress.json`. In a **separate terminal**
+on the Blender host, run the watcher while making the usual `generate_ego_video`
+call. The watcher does not start or cancel a render:
+
+```powershell
+.\scripts\watch_ego_progress.ps1 -Path 'D:\renders\walkthrough_progress.json'
+```
+
+Requires Windows PowerShell 5.1 or newer; no dependencies. Optional
+`-PollMilliseconds 500` sets the refresh interval. `-WaitSeconds 120` limits
+waiting for the file to appear (or become readable again). Use a unique output
+filename for each run: the progress sidecar also cannot overwrite a previous run.
+
+The native progress bar shows the current stage, message, elapsed time, stage
+counters, and details such as component, spaces, connector, route, search attempt,
+expanded nodes, frontier size, or frames. Percentages apply only to a stage with
+known `completed` and `total` counts; unknown-size searches are indeterminate.
+The last-update age keeps increasing without new snapshots, so you can spot stale
+progress; it does not by itself prove that Blender has stopped. Completion clears
+the bar and exits 0. Failure prints the message, clears the bar, and exits 1.
+
+The JSON contains `status` (`running`, `completed`, or `failed`), `stage`,
+`message`, nullable `completed` and `total`, `elapsed_seconds`, UTC ISO
+`updated_at`, and a stage-dependent `details` object. The final snapshot remains
+available after the run.
+
+### Rendering and navigation limits
+
+- Uses Workbench studio/material-color rendering, not a photorealistic material
+  render. Requires native FFmpeg MPEG4/H.264 support. No audio is generated.
+- Requires a loaded IFC and static source geometry. Existing animated objects/data,
+  simulated or Geometry Nodes geometry, external frame-change handlers, and
+  differing viewport/render modifier visibility are rejected for navigation
+  geometry. Physical `IfcDoor` objects are ignored before these checks.
+- Reuses `plan_house_tour` connectivity and preserves the selected component
+  tour, including revisits. Each transition is constrained to its evidenced
+  door, opening, or stair. Disconnected components are never joined.
+- Tourable rooms require interior observation points. Each leg prefers a simple
+  observation-point -> evidenced connector -> observation-point path. Room-volume
+  and point-camera wall tests prevent arbitrary shortcuts; local routing is used
+  for concave rooms and stairs. Furniture and nearby geometry are not blockers.
+  Missing connector geometry still fails rather than silently skipping a room.
+- All physical `IfcDoor` geometry, including frame geometry owned by that
+  entity, is ignored. Door objects are hidden only for rendering, with visibility
+  restored afterward. Walls and doorway openings remain intact; every transition
+  must still cross its evidenced portal. Door meshes and the source IFC are never
+  modified. No door-motion fallback or camera-radius retry is used.
+- No capsule/body collision or 0.30 m clearance requirement is applied. This is
+  a plausible point-camera tour, not certified collision-free human navigation.
+  Existing stair tread heights and continuous step interpolation are retained.
+  The camera pauses at turns; heading changes are limited to 60 degrees per second.
+- Navigation records `method: "semantic_connector_guided_tour"`,
+  `collision_policy: "point_camera_walls_only"`, and per-transition frame ranges.
+  Evaluated geometry above 250,000 triangles is rejected. Check the video and
+  `navigation` metadata before using it as training data.
+- Temporary camera objects, render settings, frame state, and visibility changes
+  are restored after success or failure. The IFC model is not saved or edited.
+  Incomplete output files created by the command are removed on failure.
+
+Rendering is synchronous and can keep Blender busy for a long time. This command
+has a 3600-second bridge reply timeout; other tools keep their normal timeout.
+The MCP client may also need a longer tool-call timeout. A timeout does not prove
+that rendering stopped. Check Blender before retrying to avoid duplicate work.
+Missing geometry, failed path planning, invalid output locations, and render
+failures are reported as tool errors, not successful video results.

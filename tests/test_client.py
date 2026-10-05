@@ -415,3 +415,46 @@ class TestClientFrameCap:
         client = BlenderBridgeClient(host="127.0.0.1", port=port, timeout=5.0)
         with pytest.raises(BlenderBridgeError, match="too large"):
             client.send("ping")
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_ego_video_timeout_is_command_only(monkeypatch, retry):
+    from unittest.mock import Mock
+
+    from bonsai_mcp.blender_client import _TransportFailure
+
+    client = BlenderBridgeClient(timeout=7.0)
+    sock = Mock()
+    replacement = Mock()
+    client._sock = sock
+    monkeypatch.setattr(client, "_connect", lambda: replacement)
+    seen = []
+
+    def exchange(active_sock, payload):
+        seen.append((payload["command"], active_sock.settimeout.call_args.args[0]))
+        if retry and len(seen) == 1:
+            raise _TransportFailure(True, BlenderBridgeError("stale"))
+        return {"success": True, "result": {}, "id": payload["id"]}
+
+    monkeypatch.setattr(client, "_exchange", exchange)
+    client.send("generate_ego_video", {"output_path": "walk.mp4"})
+    client.send("ping")
+    assert seen == [("generate_ego_video", 3600.0)] * (2 if retry else 1) + [("ping", 7.0)]
+    assert client.timeout == 7.0
+
+
+def test_ego_video_reply_timeout_does_not_retry(monkeypatch):
+    from unittest.mock import Mock
+
+    client = BlenderBridgeClient(timeout=7.0)
+    sock = Mock()
+    sock.gettimeout.return_value = 3600.0
+    sock.recv.side_effect = TimeoutError("late")
+    client._sock = sock
+    connect = Mock()
+    monkeypatch.setattr(client, "_connect", connect)
+    with pytest.raises(BlenderBridgeError, match="3600.0s"):
+        client.send("generate_ego_video", {"output_path": "walk.mp4"})
+    connect.assert_not_called()
+    assert client._sock is None
+    assert client.timeout == 7.0

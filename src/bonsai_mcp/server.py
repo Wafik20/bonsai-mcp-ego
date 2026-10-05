@@ -32,12 +32,14 @@ from bonsai_mcp.blender_client import BlenderBridgeClient, BlenderBridgeError
 from bonsai_mcp.schemas import (
     ExecuteCodeInput,
     ExecuteIfcCodeInput,
+    GenerateEgoVideoInput,
     GetPsetsInput,
     GetQuantitiesInput,
     GetSceneInfoInput,
     GetSelectedObjectsInput,
     GetSpatialStructureInput,
     ListElementsInput,
+    PlanHouseTourInput,
     RefreshInput,
     SaveIfcInput,
     ViewportScreenshotInput,
@@ -49,6 +51,7 @@ from bonsai_mcp.tools import (
     QUERY_TOOL_NAMES,
     TOOL_EXECUTE_BLENDER_CODE,
     TOOL_EXECUTE_IFC_CODE,
+    TOOL_GENERATE_EGO_VIDEO,
     TOOL_GET_IFC_PROJECT_INFO,
     TOOL_GET_PSETS,
     TOOL_GET_QUANTITIES,
@@ -57,6 +60,7 @@ from bonsai_mcp.tools import (
     TOOL_GET_SPATIAL_STRUCTURE,
     TOOL_GET_VIEWPORT_SCREENSHOT,
     TOOL_LIST_ELEMENTS,
+    TOOL_PLAN_HOUSE_TOUR,
     TOOL_REFRESH_GEOMETRY,
     TOOL_REFRESH_VIEW,
     TOOL_RELOAD_PROJECT,
@@ -65,6 +69,7 @@ from bonsai_mcp.tools import (
     _as_json,
     tool_execute_blender_code,
     tool_execute_ifc_code,
+    tool_generate_ego_video,
     tool_get_ifc_project_info,
     tool_get_psets,
     tool_get_quantities,
@@ -73,6 +78,7 @@ from bonsai_mcp.tools import (
     tool_get_spatial_structure,
     tool_get_viewport_screenshot,
     tool_list_elements,
+    tool_plan_house_tour,
     tool_refresh_geometry,
     tool_refresh_view,
     tool_reload_project,
@@ -121,6 +127,61 @@ _EXEC_OUTPUT_PROPS: dict[str, Any] = {
 
 # (name, title, kind, input model, description, output schema, idempotent)
 _TOOL_SPECS: tuple[tuple[str, str, str, type[BaseModel], str, dict[str, Any], bool], ...] = (
+    (
+        TOOL_GENERATE_EGO_VIDEO,
+        "Generate Ego Video",
+        "EDIT",
+        GenerateEgoVideoInput,
+        (
+            "Render an egocentric walkthrough of the currently loaded IFC scene to an MP4 "
+            "on the Blender host. Optionally select component_id from plan_house_tour; "
+            "otherwise an eligible component is chosen deterministically. "
+            "duration_seconds is a minimum, not a "
+            "route truncation limit; the full selected tour may take longer. Uses a "
+            "plausible room/connector-guided camera path, not human-body collision clearance. "
+            "Ignores and temporarily hides physical doors; restores scene state without editing IFC. Requires "
+            "Allow edits. Synchronous rendering can take up to an hour; returns file "
+            "metadata, not video bytes."
+        ),
+        _output_schema("Walkthrough video metadata.", {
+            "video_path": {"type": "string"},
+            "poses_path": {"type": "string"},
+            "frame_count": {"type": "integer"},
+            "fps": {"type": "integer"},
+            "duration_seconds": {
+                "type": "number",
+                "description": "Actual rendered duration, at least requested_duration_seconds.",
+            },
+            "width": {"type": "integer"},
+            "height": {"type": "integer"},
+            "camera_height": {"type": "number"},
+            "seed": {"type": "integer"},
+            "success": {"type": "boolean"},
+            "navigation": {"type": "object"},
+            "requested_duration_seconds": {
+                "type": "number",
+                "description": "Requested minimum duration; the complete tour is never truncated.",
+            },
+            "component_id": {"type": "integer", "minimum": 0},
+            "tour": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "Ordered IFC space IDs from the selected component route, preserving revisits.",
+            },
+            "visited_spaces": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "Unique visited IFC space IDs in the selected component.",
+            },
+            "tourable_rooms_visited": {"type": "integer", "minimum": 0},
+            "tourable_rooms_total": {"type": "integer", "minimum": 0},
+            "coverage": {"type": "number", "minimum": 0, "maximum": 1},
+            "route_length_m": {"type": "number", "minimum": 0},
+            "coordinate_system": {"type": "string"},
+            "position_units": {"type": "string"},
+            "metres_per_scene_unit": {"type": "number"},
+            "quaternion_order": {"type": "string"},
+        }),
+        False,
+    ),
     (
         TOOL_GET_SCENE_INFO,
         "Get Scene Info",
@@ -311,6 +372,82 @@ _TOOL_SPECS: tuple[tuple[str, str, str, type[BaseModel], str, dict[str, Any], bo
         True,
     ),
     (
+        TOOL_PLAN_HOUSE_TOUR,
+        "Plan House Tour",
+        "QUERY",
+        PlanHouseTourInput,
+        (
+            "Build an evidenced connectivity graph of loaded IFC spaces using IFC "
+            "relationships, paired virtual-boundary polygons, and stair-tread/floor overlap; "
+            "never bounding-box proximity. Classify interior touring targets, investigate "
+            "disconnected components, and plan one deterministic tour per interior component. "
+            "Returns classifications, per-component tours, coverage, and validation diagnostics. Read-only; "
+            "works with Allow edits disabled. Does not render, move a camera, or prove "
+            "geometric walkability. start_space_id is an IFC entity ID, not a GlobalId."
+        ),
+        _output_schema("Classified IFC interior graph, per-component tours, coverage, and diagnostics.", {
+            "tourable_spaces": {"type": "array"},
+            "circulation_spaces": {"type": "array"},
+            "excluded_spaces": {"type": "array"},
+            "unresolved_spaces": {"type": "array"},
+            "tours": {"type": "array", "items": {"type": "object"}},
+            "raw_components": {"type": "array"},
+            "raw_graph": {"type": "object"},
+            "component_details": {"type": "array"},
+            "component_tours": {"type": "array"},
+            "target_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "covered_target_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "tourable_room_coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            "classification_complete": {"type": "boolean"},
+            "coverage_complete": {"type": "boolean"},
+            "graph_validation_status": {"type": "string"},
+            "graph_validation_scope": {"type": "string"},
+            "component_separation": {"type": "object"},
+            "unresolved_graph_spaces": {"type": "array"},
+            "blocking_unresolved_connectors": {"type": "array"},
+            "connector_audit_notes": {"type": "array"},
+            "nodes": {"type": "array"},
+            "spaces": {"type": "array"},
+            "connections": {"type": "array"},
+            "tour": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "space_id": {"type": "integer"},
+                    "name": {"type": ["string", "null"]},
+                    "long_name": {"type": ["string", "null"]},
+                    "storey_id": {"type": ["integer", "null"]},
+                    "storey_name": {"type": ["string", "null"]},
+                },
+            }},
+            "visited_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "unreachable_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "reachable_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            "whole_model_coverage": {"type": "number", "minimum": 0, "maximum": 1},
+            "total_space_count": {"type": "integer"},
+            "reachable_space_count": {"type": "integer"},
+            "unique_visited_count": {"type": "integer"},
+            "all_spaces_visited": {"type": "boolean"},
+            "edges": {"type": "array"},
+            "route_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "start_space_id": {"type": ["integer", "null"]},
+            "seed": {"type": "integer"},
+            "unresolved_connectors": {"type": "array"},
+            "graph_text": {"type": "string"},
+            "tour_text": {"type": "string"},
+            "warnings": {"type": "array"},
+            "stats": {"type": "object"},
+            "components": {"type": "array"},
+            "isolated_space_ids": {"type": "array", "items": {"type": "integer"}},
+            "storeys": {"type": "array"},
+            "represented_storey_ids": {"type": "array", "items": {"type": "integer"}},
+            "geometry_diagnostics": {"type": "array", "items": {"type": "object"}},
+            "evidence": {"type": "array"},
+            "debug": {"type": "object"},
+        }),
+        True,
+    ),
+    (
         TOOL_EXECUTE_IFC_CODE,
         "Execute IFC Code",
         "EDIT",
@@ -475,9 +612,9 @@ You are connected to a Blender + Bonsai (BlenderBIM) session via Bonsai MCP.
 
 - [QUERY] tools (read-only): `get_scene_info`, `get_selected_objects`,
   `list_elements`, `get_psets`, `get_viewport_screenshot`,
-  `get_ifc_project_info`, `get_spatial_structure`, `get_quantities`.
+  `get_ifc_project_info`, `get_spatial_structure`, `get_quantities`, `plan_house_tour`.
 - [EDIT] tools (modify state): `execute_ifc_code`, `execute_blender_code`,
-  `save_ifc_file`, `refresh_view`, `refresh_geometry`, `reload_project`.
+  `save_ifc_file`, `refresh_view`, `refresh_geometry`, `reload_project`, `generate_ego_video`.
 
 Reach for QUERY tools first; only use EDIT tools when the user has asked
 for a change. Typical BIM questions are answerable without code:
@@ -809,6 +946,7 @@ def _dispatch_tool(
         return _screenshot_to_mcp_content(payload), structured
 
     handlers = {
+        TOOL_GENERATE_EGO_VIDEO: lambda: tool_generate_ego_video(client, arguments),
         TOOL_GET_SCENE_INFO: lambda: tool_get_scene_info(client, arguments),
         TOOL_GET_SELECTED_OBJECTS: lambda: tool_get_selected_objects(client, arguments),
         TOOL_LIST_ELEMENTS: lambda: tool_list_elements(client, arguments),
@@ -816,6 +954,7 @@ def _dispatch_tool(
         TOOL_GET_IFC_PROJECT_INFO: lambda: tool_get_ifc_project_info(client),
         TOOL_GET_SPATIAL_STRUCTURE: lambda: tool_get_spatial_structure(client, arguments),
         TOOL_GET_QUANTITIES: lambda: tool_get_quantities(client, arguments),
+        TOOL_PLAN_HOUSE_TOUR: lambda: tool_plan_house_tour(client, arguments),
         TOOL_EXECUTE_IFC_CODE: lambda: tool_execute_ifc_code(client, arguments),
         TOOL_EXECUTE_BLENDER_CODE: lambda: tool_execute_blender_code(client, arguments),
         TOOL_SAVE_IFC_FILE: lambda: tool_save_ifc_file(client, arguments),

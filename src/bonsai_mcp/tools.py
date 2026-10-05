@@ -13,12 +13,14 @@ from bonsai_mcp.blender_client import BlenderBridgeClient, BlenderBridgeError
 from bonsai_mcp.schemas import (
     ExecuteCodeInput,
     ExecuteIfcCodeInput,
+    GenerateEgoVideoInput,
     GetPsetsInput,
     GetQuantitiesInput,
     GetSceneInfoInput,
     GetSelectedObjectsInput,
     GetSpatialStructureInput,
     ListElementsInput,
+    PlanHouseTourInput,
     RefreshInput,
     SaveIfcInput,
     ViewportScreenshotInput,
@@ -38,6 +40,8 @@ TOOL_SAVE_IFC_FILE = "save_ifc_file"
 TOOL_REFRESH_VIEW = "refresh_view"
 TOOL_REFRESH_GEOMETRY = "refresh_geometry"
 TOOL_RELOAD_PROJECT = "reload_project"
+TOOL_GENERATE_EGO_VIDEO = "generate_ego_video"
+TOOL_PLAN_HOUSE_TOUR = "plan_house_tour"
 
 QUERY_TOOL_NAMES = (
     TOOL_GET_SCENE_INFO,
@@ -48,8 +52,10 @@ QUERY_TOOL_NAMES = (
     TOOL_GET_IFC_PROJECT_INFO,
     TOOL_GET_SPATIAL_STRUCTURE,
     TOOL_GET_QUANTITIES,
+    TOOL_PLAN_HOUSE_TOUR,
 )
 EDIT_TOOL_NAMES = (
+    TOOL_GENERATE_EGO_VIDEO,
     TOOL_EXECUTE_IFC_CODE,
     TOOL_EXECUTE_BLENDER_CODE,
     TOOL_SAVE_IFC_FILE,
@@ -238,6 +244,22 @@ def tool_get_spatial_structure(
     return result
 
 
+def tool_plan_house_tour(
+    client: BlenderBridgeClient, raw_input: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return classified IFC interior spaces and a coverage tour per component."""
+    args = PlanHouseTourInput.model_validate({} if raw_input is None else raw_input)
+    try:
+        result = client.send("plan_house_tour", args.model_dump())
+    except Exception as exc:
+        raise _tool_error(exc) from exc
+    if not isinstance(result, dict):
+        raise ToolError(f"unexpected plan_house_tour payload: {result!r}")
+    if result.get("error"):
+        raise ToolError(str(result["error"]))
+    return result
+
+
 def tool_get_quantities(
     client: BlenderBridgeClient, raw_input: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -338,4 +360,20 @@ def tool_save_ifc_file(
         raise _tool_error(exc) from exc
     if not isinstance(result, dict):
         raise ToolError(f"unexpected save payload: {result!r}")
+    return result
+
+
+def tool_generate_ego_video(
+    client: BlenderBridgeClient, raw_input: dict[str, Any]
+) -> dict[str, Any]:
+    """Render a walkthrough MP4 on the Blender host."""
+    args = GenerateEgoVideoInput.model_validate(raw_input)
+    try:
+        result = client.send("generate_ego_video", args.model_dump())
+    except Exception as exc:
+        raise _tool_error(exc) from exc
+    if not isinstance(result, dict):
+        raise ToolError(f"unexpected generate_ego_video payload: {result!r}")
+    if result.get("error"):
+        raise ToolError(str(result["error"]))
     return result

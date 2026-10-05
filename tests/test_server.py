@@ -107,6 +107,7 @@ def test_build_server_does_not_touch_bridge():
 
 
 _DISPATCH_CASES = {
+    "generate_ego_video": ({"output_path": "/tmp/walk.mp4"}, "generate_ego_video"),
     "get_scene_info": ({}, "get_scene_info"),
     "get_selected_objects": ({}, "get_selected_objects"),
     "list_elements": ({}, "list_elements"),
@@ -115,6 +116,7 @@ _DISPATCH_CASES = {
     "get_ifc_project_info": ({}, "get_ifc_project_info"),
     "get_spatial_structure": ({}, "get_spatial_structure"),
     "get_quantities": ({}, "get_quantities"),
+    "plan_house_tour": ({}, "plan_house_tour"),
     "execute_ifc_code": ({"code": "print(1)"}, "execute_ifc_code"),
     "execute_blender_code": ({"code": "print(1)"}, "execute_code"),
     "save_ifc_file": ({"output_path": "/tmp/out.ifc"}, "save_ifc_file"),
@@ -343,3 +345,85 @@ def test_server_instructions_describe_categories():
     assert "get_spatial_structure" in _SERVER_INSTRUCTIONS
     assert "get_quantities" in _SERVER_INSTRUCTIONS
     assert "list_elements" in _SERVER_INSTRUCTIONS
+
+
+def test_generate_ego_video_structured_output_and_edit_registration():
+    from bonsai_mcp.schemas import GenerateEgoVideoInput
+
+    payload = {"success": True, "video_path": "walk.mp4", "frame_count": 300, "navigation": {"seed": 0}}
+    client = FakeBlenderBridgeClient(responses={"generate_ego_video": payload})
+    content, structured = _dispatch_tool(client, "generate_ego_video", {"output_path": "walk.mp4"})
+    assert structured == payload
+    assert json.loads(content[0].text) == payload
+    tool = next(t for t in _tool_definitions() if t.name == "generate_ego_video")
+    assert tool.inputSchema == input_schema_for(GenerateEgoVideoInput)
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.idempotentHint is False
+    assert "generate_ego_video" in EDIT_TOOL_NAMES
+
+
+def test_generate_ego_video_tour_contract():
+    definitions = {tool.name: tool for tool in _tool_definitions()}
+    video = definitions["generate_ego_video"]
+    component = video.inputSchema["properties"]["component_id"]
+    assert component["default"] is None
+    assert {"minimum": 0, "type": "integer"} in component["anyOf"]
+    assert "component_id" not in video.inputSchema["required"]
+    assert "minimum" in video.inputSchema["properties"]["duration_seconds"]["description"].lower()
+    assert "not a route truncation limit" in video.description
+    properties = video.outputSchema["properties"]
+    for field in ("tour", "visited_spaces"):
+        assert properties[field]["type"] == "array"
+        assert properties[field]["items"] == {"type": "integer"}
+    for field in ("tourable_rooms_visited", "tourable_rooms_total", "component_id"):
+        assert properties[field] == {"type": "integer", "minimum": 0}
+    assert properties["coverage"] == {"type": "number", "minimum": 0, "maximum": 1}
+    assert properties["route_length_m"] == {"type": "number", "minimum": 0}
+    assert "deterministically" in video.description
+    payload = {
+        "component_id": 0, "requested_duration_seconds": 1.0,
+        "duration_seconds": 20.0, "frame_count": 200,
+        "tour": [42, 84, 42], "visited_spaces": [42, 84],
+        "tourable_rooms_visited": 2, "tourable_rooms_total": 2,
+        "coverage": 1.0, "route_length_m": 24.5,
+        "navigation": {"route_space_ids": [42, 84, 42]},
+    }
+    client = FakeBlenderBridgeClient(responses={"generate_ego_video": payload})
+    content, structured = _dispatch_tool(client, "generate_ego_video", {
+        "output_path": "walk.mp4", "component_id": 0, "duration_seconds": 1.0,
+    })
+    assert structured == payload
+    assert json.loads(content[0].text) == payload
+    assert client.calls[0][1]["component_id"] == 0
+    assert client.calls[0][1]["duration_seconds"] == 1.0
+
+
+def test_plan_house_tour_read_only_schema_and_structured_output():
+    from bonsai_mcp.schemas import PlanHouseTourInput
+
+    definition = next(t for t in _tool_definitions() if t.name == "plan_house_tour")
+    assert definition.inputSchema == input_schema_for(PlanHouseTourInput)
+    assert definition.annotations.readOnlyHint is True
+    assert definition.annotations.destructiveHint is False
+    assert definition.annotations.idempotentHint is True
+    assert "plan_house_tour" in QUERY_TOOL_NAMES
+    assert "plan_house_tour" not in EDIT_TOOL_NAMES
+    payload = {
+        "spaces": [{"id": 42}, {"id": 84}], "connections": [], "tour": [],
+        "tourable_spaces": [{"id": 42}, {"id": 84}], "circulation_spaces": [],
+        "excluded_spaces": [], "unresolved_spaces": [],
+        "tours": [
+            {"component_id": "component_1", "tour": [{"space_id": 42}], "coverage": 1.0},
+            {"component_id": "component_2", "tour": [{"space_id": 84}], "coverage": 1.0},
+        ],
+        "visited_space_ids": [42, 84], "reachable_space_ids": [42, 84],
+        "unreachable_space_ids": [], "coverage": 1.0,
+        "classification_complete": True, "graph_validation_status": "unresolved",
+        "coverage_complete": False,
+        "debug": {"adjacency_text": "42: isolated; 84: isolated"},
+    }
+    client = FakeBlenderBridgeClient(responses={"plan_house_tour": payload})
+    content, structured = _dispatch_tool(client, "plan_house_tour", {"start_space_id": 42})
+    assert structured == payload
+    assert json.loads(content[0].text) == payload
+    assert client.calls == [("plan_house_tour", {"start_space_id": 42, "seed": 0})]

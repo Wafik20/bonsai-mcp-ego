@@ -1121,3 +1121,115 @@ def test_edit_commands_match_server_edit_tools(bridge):
 
 def test_max_message_bytes_parity(bridge):
     assert bridge.MAX_MESSAGE_BYTES == bc.MAX_MESSAGE_BYTES
+
+
+# generate_ego_video trust-boundary validation (works without Blender).
+@pytest.mark.parametrize("key,value", [
+    ("duration_seconds", float("nan")), ("duration_seconds", 0),
+    ("fps", True), ("fps", 0), ("width", 1279), ("width", 10),
+    ("height", 4098), ("camera_height", float("inf")),
+    ("seed", -1), ("seed", 1.5), ("unexpected", 0),
+    ("component_id", -1), ("component_id", True), ("component_id", 0.5),
+    ("component_id", "0"),
+])
+def test_ego_invalid_arguments(bridge, tmp_path, key, value):
+    bridge._fake_bpy.path = SimpleNamespace(abspath=lambda path: path)
+    args = {"output_path": str(tmp_path / "walk.mp4"), key: value}
+    with pytest.raises(ValueError):
+        bridge._ego_validate(args)
+
+
+def test_ego_paths_defaults_rounding_and_overwrite(bridge, tmp_path):
+    bridge._fake_bpy.path = SimpleNamespace(abspath=lambda path: path)
+    path = tmp_path / "walk.mp4"
+    args = bridge._ego_validate({"output_path": str(path)})
+    assert args["frame_count"] == 300
+    assert args["component_id"] is None
+    assert bridge._ego_validate({"output_path": str(path), "component_id": 0})["component_id"] == 0
+    assert bridge._ego_validate({"output_path": str(path), "duration_seconds": .201})["frame_count"] == 3
+    assert args["poses_path"] == tmp_path / "walk_poses.json"
+    assert bridge._ego_validate({"output_path": str(path), "duration_seconds": .25})["frame_count"] == 3
+    path.write_bytes(b"original")
+    with pytest.raises(FileExistsError):
+        bridge._ego_validate({"output_path": str(path)})
+    assert path.read_bytes() == b"original"
+    path.unlink()
+    args["poses_path"].write_text("original")
+    with pytest.raises(FileExistsError):
+        bridge._ego_validate({"output_path": str(path)})
+
+
+@pytest.mark.parametrize("path", ["", "x.png", "bad\0.mp4"])
+def test_ego_bad_path(bridge, path):
+    bridge._fake_bpy.path = SimpleNamespace(abspath=lambda path: path)
+    with pytest.raises(ValueError):
+        bridge._ego_validate({"output_path": path})
+
+
+def test_ego_dispatch_is_edit_gated(bridge):
+    assert bridge._HANDLERS["generate_ego_video"] is bridge._h_generate_ego_video
+    assert "generate_ego_video" in bridge._EDIT_COMMANDS
+
+
+def test_ego_long_wait_does_not_change_other_commands(bridge, monkeypatch):
+    class Done:
+        def __init__(self):
+            self.calls = 0
+        def wait(self, timeout):
+            self.calls += 1
+            return self.calls > 1
+        def is_set(self):
+            return False
+    bridge._STATE["server"] = object()
+    monkeypatch.setattr(bridge.time, "monotonic", iter([0, 121]).__next__)
+    monkeypatch.setattr(bridge.select, "select", lambda *args: ([], [], []))
+    pending = bridge._PendingRequest("generate_ego_video", {})
+    pending.done = Done()
+    assert bridge._BridgeHandler._await_result(None, pending)
+    assert not pending.cancelled
+    monkeypatch.setattr(bridge.time, "monotonic", iter([0, 121]).__next__)
+    pending = bridge._PendingRequest("ping", {})
+    pending.done = Done()
+    assert bridge._BridgeHandler._await_result(None, pending)
+    assert pending.cancel_reason == "timeout"
+
+
+def test_ego_yaws_bounded_and_turn_during_hold(bridge):
+    import math
+
+    positions = [(i / 10, 0, 1.65) for i in range(11)]
+    positions += [(1, 0, 1.65)] * 20
+    positions += [(1, i / 10, 1.65) for i in range(1, 11)]
+    yaws = bridge._ego_yaws(positions, 10)
+    assert all(abs(b - a) <= math.radians(6) + 1e-9 for a, b in zip(yaws, yaws[1:], strict=False))
+    assert yaws[29] == pytest.approx(math.pi / 2)
+    assert yaws[0] == pytest.approx(0)
+
+
+def test_ego_yaws_stationary_and_single_frame(bridge):
+    assert bridge._ego_yaws([(0, 0, 1)], 10) == [0]
+    assert bridge._ego_yaws([(0, 0, 1)] * 5, 10) == [0] * 5
+
+
+def test_ego_progress_sidecar_is_reserved_without_overwrite(bridge, tmp_path):
+    bridge._fake_bpy.path = SimpleNamespace(abspath=lambda path: path)
+    path = tmp_path / "tour.mp4"
+    args = bridge._ego_validate({"output_path": str(path)})
+    assert args["progress_path"] == tmp_path / "tour_progress.json"
+    args["progress_path"].write_text("previous run")
+    with pytest.raises(FileExistsError, match="progress sidecar"):
+        bridge._ego_validate({"output_path": str(path)})
+    assert args["progress_path"].read_text() == "previous run"
+
+
+def test_ego_early_failure_records_progress(bridge, tmp_path, monkeypatch):
+    import json
+
+    bridge._fake_bpy.path = SimpleNamespace(abspath=lambda path: path)
+    monkeypatch.setattr(bridge, "_get_loaded_ifc", lambda: None)
+    with pytest.raises(ValueError, match="No IFC project"):
+        bridge._h_generate_ego_video({"output_path": str(tmp_path / "tour.mp4")})
+    progress = json.loads((tmp_path / "tour_progress.json").read_text())
+    assert progress["status"] == "failed"
+    assert "No IFC project" in progress["message"]
+    assert not (tmp_path / "tour.mp4").exists()

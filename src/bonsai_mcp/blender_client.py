@@ -17,6 +17,7 @@ from bonsai_mcp.schemas import BridgeRequest, BridgeResponse
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9878
 DEFAULT_TIMEOUT_SECONDS = 30.0
+EGO_VIDEO_TIMEOUT_SECONDS = 3600.0
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 _VERSION_SKEW_HINT = (
@@ -149,7 +150,12 @@ class BlenderBridgeClient:
         if self._sock is None:
             self._sock = self._connect()
         sock = self._sock
-        sock.settimeout(self.timeout)
+        timeout = (
+            EGO_VIDEO_TIMEOUT_SECONDS
+            if payload["command"] == "generate_ego_video"
+            else self.timeout
+        )
+        sock.settimeout(timeout)
 
         try:
             reply = self._exchange(sock, payload)
@@ -160,6 +166,7 @@ class BlenderBridgeClient:
             # the add-on closed the idle connection between calls; one
             # fresh-connection retry, then give up with the original error
             self._sock = self._connect()
+            self._sock.settimeout(timeout)
             try:
                 reply = self._exchange(self._sock, payload)
             except _TransportFailure as second:
@@ -207,7 +214,7 @@ class BlenderBridgeClient:
             raise _TransportFailure(
                 False,
                 BlenderBridgeError(
-                    f"Timed out after {self.timeout}s waiting for the Blender bridge. "
+                    f"Timed out after {sock.gettimeout()}s waiting for the Blender bridge. "
                     "Long-running operations may need a larger BONSAI_MCP_TIMEOUT. "
                     "If this happens on every call, something other than the Bonsai MCP "
                     f"Bridge add-on may be listening on {self.host}:{self.port}."

@@ -590,3 +590,99 @@ class TestSaveIfcFile:
         tool_save_ifc_file(client, {"reload": True})
         params = client.calls[-1][1]
         assert params["reload"] is True
+
+
+class TestGenerateEgoVideo:
+    @pytest.mark.parametrize("component_id", [0, 3])
+    def test_component_selection_and_longer_duration_passthrough(self, component_id):
+        from bonsai_mcp.tools import tool_generate_ego_video
+
+        payload = {
+            "component_id": component_id,
+            "requested_duration_seconds": 1.0,
+            "duration_seconds": 180.0,
+            "frame_count": 1800,
+            "tour": [12, 24, 12],
+            "visited_spaces": [12, 24],
+            "tourable_rooms_visited": 2,
+            "tourable_rooms_total": 2,
+            "coverage": 1.0,
+            "route_length_m": 24.5,
+            "navigation": {"route_space_ids": [12, 24, 12]},
+        }
+        client = FakeBlenderBridgeClient(responses={"generate_ego_video": payload})
+        result = tool_generate_ego_video(client, {
+            "output_path": "walk.mp4", "component_id": component_id, "duration_seconds": 1.0,
+        })
+        assert result == payload
+        assert client.calls[0][1]["component_id"] == component_id
+        assert client.calls[0][1]["duration_seconds"] == 1.0
+
+    @pytest.mark.parametrize("component_id", [-1, True, "0", 0.0])
+    def test_invalid_component_never_calls_bridge(self, component_id):
+        from bonsai_mcp.tools import tool_generate_ego_video
+
+        client = FakeBlenderBridgeClient()
+        with pytest.raises(ValidationError):
+            tool_generate_ego_video(client, {"output_path": "walk.mp4", "component_id": component_id})
+        assert client.calls == []
+
+    def test_params_and_payload(self):
+        from bonsai_mcp.tools import tool_generate_ego_video
+
+        payload = {"video_path": "/tmp/walk.mp4", "poses_path": "/tmp/walk.poses.json",
+                   "frame_count": 300}
+        client = FakeBlenderBridgeClient(responses={"generate_ego_video": payload})
+        assert tool_generate_ego_video(client, {"output_path": "/tmp/walk.mp4"}) == payload
+        assert client.calls == [("generate_ego_video", dict(output_path="/tmp/walk.mp4",
+            duration_seconds=30.0, fps=10, width=1280, height=720, camera_height=1.65,
+            seed=0, component_id=None))]
+
+    @pytest.mark.parametrize("response", [[], "bad", {"error": "render failed"},
+                                          BlenderBridgeError("Allow edits is disabled")])
+    def test_failure(self, response):
+        from bonsai_mcp.tools import tool_generate_ego_video
+
+        client = FakeBlenderBridgeClient(responses={"generate_ego_video": response})
+        with pytest.raises(ToolError):
+            tool_generate_ego_video(client, {"output_path": "walk.mp4"})
+
+
+class TestPlanHouseTour:
+    @pytest.mark.parametrize("arguments, expected", [
+        (None, {"start_space_id": None, "seed": 0}),
+        ({"start_space_id": 42, "seed": 7}, {"start_space_id": 42, "seed": 7}),
+    ])
+    def test_passes_params_and_preserves_result(self, arguments, expected):
+        from bonsai_mcp.tools import tool_plan_house_tour
+
+        payload = {"spaces": [], "tour": [], "coverage": 0.0, "debug": {"adjacency_text": ""}}
+        client = FakeBlenderBridgeClient(responses={"plan_house_tour": payload})
+        assert tool_plan_house_tour(client, arguments) == payload
+        assert client.calls == [("plan_house_tour", expected)]
+
+    @pytest.mark.parametrize("arguments", [{"seed": True}, {"start_space_id": 0}, {"unknown": 1}, []])
+    def test_invalid_input_never_calls_bridge(self, arguments):
+        from bonsai_mcp.tools import tool_plan_house_tour
+
+        client = FakeBlenderBridgeClient()
+        with pytest.raises(ValidationError):
+            tool_plan_house_tour(client, arguments)
+        assert client.calls == []
+
+    @pytest.mark.parametrize("payload", [[], None, "bad", {"error": "No IFC project loaded"}])
+    def test_bad_payload_or_bridge_error_is_tool_error(self, payload):
+        from bonsai_mcp.tools import tool_plan_house_tour
+
+        client = FakeBlenderBridgeClient(on_send=lambda *_: payload)
+        with pytest.raises(ToolError):
+            tool_plan_house_tour(client)
+
+    def test_transport_failure_is_tool_error(self):
+        from bonsai_mcp.tools import tool_plan_house_tour
+
+        def fail(*_):
+            raise BlenderBridgeError("offline")
+
+        with pytest.raises(ToolError, match="Blender bridge error: offline"):
+            tool_plan_house_tour(FakeBlenderBridgeClient(on_send=fail))
